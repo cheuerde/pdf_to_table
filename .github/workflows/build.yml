@@ -1,3 +1,4 @@
+
 name: Build Executables
 
 on:
@@ -23,10 +24,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
     
@@ -42,7 +43,7 @@ jobs:
         python -m pip install --upgrade pip wheel setuptools
 
     - name: Cache pip packages
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
@@ -92,13 +93,10 @@ jobs:
         echo "2. Select the folder containing your PDF bank statements" >> dist/package/README.txt
         echo "3. Select the output folder for the processed files" >> dist/package/README.txt
         echo "4. Wait for processing to complete" >> dist/package/README.txt
-        echo "" >> dist/package/README.txt
-        echo "Note: If you get a security warning, you may need to right-click" >> dist/package/README.txt
-        echo "the file and select 'Run Anyway' or adjust your security settings." >> dist/package/README.txt
       shell: bash
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: dist/package/
@@ -108,13 +106,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v2
+      uses: actions/download-artifact@v4
     
     - name: Create Release
-      id: create_release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ github.run_number }}
