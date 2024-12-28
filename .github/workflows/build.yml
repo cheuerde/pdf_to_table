@@ -103,12 +103,19 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write
+      contents: write  # Make sure we have write permissions
     
     steps:
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
-    
+      with:
+        path: artifacts
+
+    - name: List files for debugging
+      run: |
+        ls -R artifacts/
+      shell: bash
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
@@ -117,20 +124,20 @@ jobs:
         draft: false
         prerelease: false
         files: |
-          bank_statement_processor_windows/*
-          bank_statement_processor_linux/*
+          artifacts/bank_statement_processor_windows/*
+          artifacts/bank_statement_processor_linux/*
         body: |
           Bank Statement PDF Processor Release ${{ github.run_number }}
           
           This release includes:
-          - Windows executable (bank_statement_processor_windows)
-          - Linux executable (bank_statement_processor_linux)
+          - Windows executable (extract_windows.exe)
+          - Linux executable (extract_linux)
           
-          Installation:
+          Instructions:
           1. Download the appropriate version for your operating system
-          2. Extract the downloaded file
-          3. Run the executable file
-          
-          For detailed instructions, please read the README.txt file included in the package.
+          2. Run the executable
+          3. Select input folder with PDF files
+          4. Select output folder for results
+          5. Click Process Files and wait for completion
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
