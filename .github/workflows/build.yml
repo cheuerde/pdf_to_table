@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
-      contents: write  # Make sure we have write permissions
+      contents: write
     
     steps:
     - name: Download artifacts
@@ -123,9 +123,7 @@ jobs:
         name: Release ${{ github.run_number }}
         draft: false
         prerelease: false
-        files: |
-          artifacts/bank_statement_processor_windows/*
-          artifacts/bank_statement_processor_linux/*
+        files: artifacts/**/*
         body: |
           Bank Statement PDF Processor Release ${{ github.run_number }}
           
