@@ -38,11 +38,11 @@ except ImportError:
         def __str__(self):
             return self.path
 
-class BankStatementProcessor(tk.Tk):
+class PDFProcessor(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Bank Statement PDF Processor")
+        self.title("PDF Processor")
         self.geometry("800x600")
         
         # Platform-specific setup
@@ -278,7 +278,7 @@ def main():
             except:
                 pass
         
-        app = BankStatementProcessor()
+        app = PDFProcessor()
         
         # Center the window on screen
         app.update_idletasks()
