@@ -16,10 +16,10 @@ jobs:
         include:
           - os: windows-latest
             executable_name: extract_windows.exe
-            artifact_name: bank_statement_processor_windows
+            artifact_name: pdf_to_table_windows
           - os: ubuntu-latest
             executable_name: extract_linux
-            artifact_name: bank_statement_processor_linux
+            artifact_name: pdf_to_table_linux
     
     runs-on: ${{ matrix.os }}
     
@@ -78,13 +78,13 @@ jobs:
         mkdir -p dist/package
         cp dist/${{ matrix.executable_name }} dist/package/
         cp README.md dist/package/ || echo "No README.md found"
-        echo "Bank Statement PDF Processor" > dist/package/README.txt
+        echo "PDF Processor" > dist/package/README.txt
         echo "Version: $(date +'%Y.%m.%d')" >> dist/package/README.txt
         echo "Platform: ${{ matrix.os }}" >> dist/package/README.txt
         echo "" >> dist/package/README.txt
         echo "Instructions:" >> dist/package/README.txt
         echo "1. Double-click the executable" >> dist/package/README.txt
-        echo "2. Select the folder containing your PDF bank statements" >> dist/package/README.txt
+        echo "2. Select the folder containing your PDF files" >> dist/package/README.txt
         echo "3. Select the output folder for the processed files" >> dist/package/README.txt
         echo "4. Wait for processing to complete" >> dist/package/README.txt
       shell: bash
@@ -118,12 +118,12 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ github.run_number }}
-        name: Bank Statement Processor v${{ github.run_number }}
+        name: PDF Processor v${{ github.run_number }}
         files: |
           dist/**/extract_windows.exe
           dist/**/extract_linux
         body: |
-          Bank Statement PDF Processor Release ${{ github.run_number }}
+          PDF Processor Release ${{ github.run_number }}
           
           Download the appropriate version for your system:
           - Windows: extract_windows.exe
