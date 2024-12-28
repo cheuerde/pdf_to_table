@@ -1,7 +1,6 @@
 import pdfplumber
 import pandas as pd
 import os
-from pathlib import Path
 import csv
 import sys
 import platform
@@ -10,12 +9,41 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from threading import Thread
 
+# Custom Path implementation with fallback
+try:
+    from pathlib import Path
+except ImportError:
+    class Path:
+        def __init__(self, path):
+            self.path = str(path)
+        
+        def __truediv__(self, other):
+            return Path(os.path.join(self.path, str(other)))
+        
+        def mkdir(self, parents=False, exist_ok=False):
+            os.makedirs(self.path, exist_ok=exist_ok)
+        
+        def glob(self, pattern):
+            import glob
+            return [Path(p) for p in glob.glob(os.path.join(self.path, pattern))]
+        
+        @property
+        def name(self):
+            return os.path.basename(self.path)
+        
+        @property
+        def stem(self):
+            return os.path.splitext(self.name)[0]
+        
+        def __str__(self):
+            return self.path
+
 class BankStatementProcessor(tk.Tk):
     def __init__(self):
         super().__init__()
 
         self.title("Bank Statement PDF Processor")
-        self.geometry("600x400")
+        self.geometry("800x600")
         
         # Platform-specific setup
         self.configure_platform_specifics()
@@ -27,6 +55,7 @@ class BankStatementProcessor(tk.Tk):
         # Configure grid
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
         
         # Folder selection frames
         self.create_folder_selection(main_frame)
@@ -68,14 +97,14 @@ class BankStatementProcessor(tk.Tk):
                 print(f"Warning: Could not apply macOS-specific settings: {e}")
 
     def create_folder_selection(self, parent):
-        parent.columnconfigure(1, weight=1)
-        
+        # Input folder selection
         ttk.Label(parent, text="Input Folder (PDF files):").grid(row=0, column=0, sticky=tk.W, pady=5)
         self.input_path_var = tk.StringVar()
         input_entry = ttk.Entry(parent, textvariable=self.input_path_var)
         input_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5, padx=5)
         ttk.Button(parent, text="Browse", command=self.select_input_folder).grid(row=0, column=2, padx=5, pady=5)
 
+        # Output folder selection
         ttk.Label(parent, text="Output Folder:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.output_path_var = tk.StringVar()
         output_entry = ttk.Entry(parent, textvariable=self.output_path_var)
@@ -87,16 +116,18 @@ class BankStatementProcessor(tk.Tk):
         progress_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
         progress_frame.columnconfigure(0, weight=1)
 
+        # Progress bar
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', variable=self.progress_var)
         self.progress_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=5, padx=5)
 
+        # Log area
         log_frame = ttk.Frame(progress_frame)
         log_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
-        self.log_text = tk.Text(log_frame, height=10, wrap=tk.WORD)
+        self.log_text = tk.Text(log_frame, height=15, width=70, wrap=tk.WORD)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
@@ -134,7 +165,7 @@ class BankStatementProcessor(tk.Tk):
     def extract_table_from_pdf(self, pdf_path):
         all_data = []
         try:
-            with pdfplumber.open(pdf_path) as pdf:
+            with pdfplumber.open(str(pdf_path)) as pdf:  # Convert Path to string
                 for page in pdf.pages:
                     table = page.extract_table()
                     if table:
@@ -172,7 +203,7 @@ class BankStatementProcessor(tk.Tk):
             return df
 
     def save_dataframe(self, df, filepath):
-        df.to_csv(filepath, 
+        df.to_csv(str(filepath),  # Convert Path to string
                   index=False,
                   quoting=csv.QUOTE_NONNUMERIC,
                   quotechar='"',
@@ -221,7 +252,7 @@ class BankStatementProcessor(tk.Tk):
                 combined_excel = Path(self.output_folder) / "all_transactions_combined.xlsx"
                 
                 self.save_dataframe(combined_df, combined_csv)
-                combined_df.to_excel(combined_excel, index=False)
+                combined_df.to_excel(str(combined_excel), index=False)  # Convert Path to string
                 
                 self.log_message(f"\nProcessing Summary:")
                 self.log_message(f"Total PDFs processed: {len(all_dfs)}")

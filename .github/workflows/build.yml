@@ -50,16 +50,14 @@ jobs:
       run: |
         uv pip install --system pyinstaller
         uv pip install --system -r requirements.txt
-    
+
     - name: Build executable
       run: |
         pyinstaller --onefile \
         --name ${{ matrix.executable_name }} \
-        --hidden-import "pkg_resources.py2_warn" \
-        --hidden-import "PIL._tkinter_finder" \
+        --hidden-import pathlib \
         --collect-all pdfplumber \
         --collect-all cryptography \
-        --exclude-module pathlib \
         extract.py
       shell: bash
     
