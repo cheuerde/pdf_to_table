@@ -109,33 +109,32 @@ jobs:
     - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
-        path: artifacts
+        path: dist
 
     - name: List files for debugging
       run: |
-        ls -R artifacts/
+        find dist -type f
       shell: bash
 
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: v${{ github.run_number }}
-        name: Release ${{ github.run_number }}
-        draft: false
-        prerelease: false
-        files: artifacts/**/*
+        name: Bank Statement Processor v${{ github.run_number }}
+        files: |
+          dist/**/extract_windows.exe
+          dist/**/extract_linux
         body: |
           Bank Statement PDF Processor Release ${{ github.run_number }}
           
-          This release includes:
-          - Windows executable (extract_windows.exe)
-          - Linux executable (extract_linux)
+          Download the appropriate version for your system:
+          - Windows: extract_windows.exe
+          - Linux: extract_linux
           
-          Instructions:
-          1. Download the appropriate version for your operating system
-          2. Run the executable
-          3. Select input folder with PDF files
-          4. Select output folder for results
-          5. Click Process Files and wait for completion
+          To use:
+          1. Download and run the executable
+          2. Select your PDF folder
+          3. Select output folder
+          4. Click Process
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
