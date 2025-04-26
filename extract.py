@@ -38,6 +38,175 @@ except ImportError:
         def __str__(self):
             return self.path
 
+# CLI version of processor that doesn't require Tkinter
+class CLIProcessor:
+    def __init__(self, input_folder=None, output_folder=None):
+        self.input_folder = input_folder
+        self.output_folder = output_folder
+    
+    def log_message(self, message):
+        print(message)
+    
+    def extract_table_from_pdf(self, pdf_path):
+        all_data = []
+        try:
+            with pdfplumber.open(str(pdf_path)) as pdf:  # Convert Path to string
+                for page in pdf.pages:
+                    table = page.extract_table()
+                    if table:
+                        if table[0][0] == 'Date':
+                            if not all_data:
+                                all_data.extend(table)  # Include header row for first table
+                            else:
+                                all_data.extend(table[1:])  # Skip header for subsequent tables
+                        else:
+                            all_data.extend(table)
+            
+            # Ensure we have headers if data exists
+            if all_data and all_data[0][0] == 'Date':
+                headers = all_data.pop(0)  # Remove header row
+                self.log_message(f"Extracted {len(all_data)} rows from {Path(pdf_path).name}")
+                return headers, all_data
+            elif all_data:
+                self.log_message(f"Extracted {len(all_data)} rows from {Path(pdf_path).name}")
+                return ["Date", "Type", "Description", "Paid in", "Paid out", "Balance"], all_data
+            else:
+                self.log_message(f"No data found in {Path(pdf_path).name}")
+                return None, []
+        except Exception as e:
+            self.log_message(f"Error processing {pdf_path}: {str(e)}")
+            return None, []
+
+    def save_dataframe(self, df, filepath):
+        df.to_csv(str(filepath),  # Convert Path to string
+                  index=False,
+                  quoting=csv.QUOTE_NONNUMERIC,
+                  quotechar='"',
+                  doublequote=True,
+                  date_format='%Y-%m-%d',
+                  float_format='%.2f')
+    
+    def create_balance_validation_file(self, df, filepath):
+        """Create a file that helps validate balance calculations"""
+        try:
+            # Sort by date
+            df = df.sort_values('Date').copy()
+            
+            # Add calculated columns for validation
+            df['Next_Balance'] = df['Balance'].shift(-1)
+            df['Calc_Next_Balance'] = df['Balance'] + df['Paid in'] - df['Paid out']
+            df['Balance_Diff'] = df['Next_Balance'] - df['Calc_Next_Balance']
+            
+            # Flag significant differences
+            df['Has_Discrepancy'] = abs(df['Balance_Diff']) > 0.01
+            
+            # Save to CSV
+            df.to_csv(str(filepath), index=False)
+            self.log_message(f"Created balance validation file: {filepath}")
+            
+            # Report statistics
+            discrepancies = df['Has_Discrepancy'].sum()
+            if discrepancies > 0:
+                self.log_message(f"Found {discrepancies} potential balance discrepancies")
+                self.log_message(f"Check {filepath} for details")
+            else:
+                self.log_message("No balance discrepancies found")
+                
+        except Exception as e:
+            self.log_message(f"Error creating balance validation file: {str(e)}")
+    
+    def process_files(self):
+        try:
+            Path(self.output_folder).mkdir(parents=True, exist_ok=True)
+            
+            pdf_files = list(Path(self.input_folder).glob("*.pdf"))
+            if not pdf_files:
+                self.log_message("No PDF files found in input folder")
+                return False
+
+            all_dfs = []
+            total_files = len(pdf_files)
+
+            for i, pdf_file in enumerate(pdf_files, 1):
+                self.log_message(f"Processing ({i}/{total_files}): {pdf_file.name}")
+                headers, table_data = self.extract_table_from_pdf(pdf_file)
+                
+                if table_data:
+                    # Create DataFrame from the extracted data
+                    df = pd.DataFrame(table_data, columns=headers)
+                    
+                    # Basic data cleaning
+                    df = df.dropna(how='all')
+                    
+                    # Clean numeric values for display
+                    for col in ['Balance', 'Paid in', 'Paid out']:
+                        df[col] = df[col].replace({None: '0', '': '0', 'nan': '0'})
+                        df[col] = df[col].astype(str).str.replace('£', '').str.replace(',', '')
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                    
+                    # Process dates
+                    df['Date'] = pd.to_datetime(df['Date'], format='%d %b %Y', errors='coerce')
+                    df['Description'] = df['Description'].astype(str).str.replace('\n', ' ').str.strip()
+                    df = df.dropna(subset=['Date'])
+                    
+                    # Add source file information and original order
+                    df['Source_File'] = pdf_file.name
+                    df['Original_Order'] = range(len(df))  # Preserve original PDF order as a reference
+                    
+                    all_dfs.append(df)
+                    
+                    # Save individual file
+                    individual_csv = Path(self.output_folder) / f"{pdf_file.stem}.csv"
+                    # Keep original PDF ordering for individual files
+                    df_to_save = df.sort_values('Original_Order')
+                    self.save_dataframe(df_to_save, individual_csv)
+                    self.log_message(f"Saved: {individual_csv}")
+
+                self.log_message(f"Progress: {i}/{total_files} files processed ({int(i/total_files*100)}%)")
+
+            if all_dfs:
+                combined_df = pd.concat(all_dfs, ignore_index=True)
+                
+                # Remove duplicates
+                duplicate_cols = ['Date', 'Description', 'Type', 'Paid in', 'Paid out', 'Balance']
+                combined_df = combined_df.drop_duplicates(subset=duplicate_cols)
+                
+                # Create transaction ID for more reliable identification
+                combined_df['Transaction_ID'] = combined_df.apply(
+                    lambda x: f"{x['Date'].strftime('%Y-%m-%d')}_{x['Description']}_{x['Paid in']}_{x['Paid out']}",
+                    axis=1
+                )
+                
+                # Sort purely by date for the combined file
+                combined_df = combined_df.sort_values('Date')
+                
+                # Remove helper columns before saving (but keep Original_Order for reference)
+                combined_df = combined_df.drop(['Transaction_ID'], axis=1)
+                
+                combined_csv = Path(self.output_folder) / "all_transactions_combined.csv"
+                combined_excel = Path(self.output_folder) / "all_transactions_combined.xlsx"
+                
+                self.save_dataframe(combined_df, combined_csv)
+                combined_df.to_excel(str(combined_excel), index=False)
+                
+                self.log_message(f"\nProcessing Summary:")
+                self.log_message(f"Total PDFs processed: {len(pdf_files)}")
+                self.log_message(f"Total transactions: {len(combined_df)}")
+                self.log_message(f"Date range: {combined_df['Date'].min()} to {combined_df['Date'].max()}")
+                self.log_message(f"Files saved in: {self.output_folder}")
+                
+                # Also save a file with balance validation information for analysis
+                self.create_balance_validation_file(combined_df, Path(self.output_folder) / "balance_validation.csv")
+                
+                return True
+            
+        except Exception as e:
+            self.log_message(f"Error: {str(e)}")
+            return False
+        
+        return False
+
+
 class PDFProcessor(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -147,6 +316,7 @@ class PDFProcessor(tk.Tk):
             self.output_path_var.set(folder)
 
     def log_message(self, message):
+        print(message)
         self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
         self.log_text.see(tk.END)
         self.update_idletasks()
@@ -162,115 +332,64 @@ class PDFProcessor(tk.Tk):
         
         Thread(target=self.process_files, daemon=True).start()
 
-    def extract_table_from_pdf(self, pdf_path):
-        all_data = []
-        try:
-            with pdfplumber.open(str(pdf_path)) as pdf:  # Convert Path to string
-                for page in pdf.pages:
-                    table = page.extract_table()
-                    if table:
-                        if table[0][0] == 'Date':
-                            if not all_data:
-                                all_data.extend(table[1:])
-                            else:
-                                all_data.extend(table[1:])
-                        else:
-                            all_data.extend(table)
-            
-            self.log_message(f"Extracted {len(all_data)} rows from {Path(pdf_path).name}")
-            return all_data
-        except Exception as e:
-            self.log_message(f"Error processing {pdf_path}: {str(e)}")
-            return []
-
-    def process_dataframe(self, df):
-        try:
-            df = df.dropna(how='all')
-            
-            for col in ['Balance', 'Paid in', 'Paid out']:
-                df[col] = df[col].replace({None: '0', '': '0', 'nan': '0'})
-                df[col] = df[col].astype(str).str.replace('£', '').str.replace(',', '')
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            df['Date'] = pd.to_datetime(df['Date'], format='%d %b %Y', errors='coerce')
-            df['Description'] = df['Description'].astype(str).str.replace('\n', ' ').str.strip()
-            df = df.dropna(subset=['Date'])
-            df = df.sort_values('Date')
-            
-            return df
-        except Exception as e:
-            self.log_message(f"Error processing dataframe: {str(e)}")
-            return df
-
-    def save_dataframe(self, df, filepath):
-        df.to_csv(str(filepath),  # Convert Path to string
-                  index=False,
-                  quoting=csv.QUOTE_NONNUMERIC,
-                  quotechar='"',
-                  doublequote=True,
-                  date_format='%Y-%m-%d',
-                  float_format='%.2f')
-
     def process_files(self):
-        try:
-            Path(self.output_folder).mkdir(parents=True, exist_ok=True)
-            
-            pdf_files = list(Path(self.input_folder).glob("*.pdf"))
-            if not pdf_files:
-                self.log_message("No PDF files found in input folder")
-                return
-
-            all_dfs = []
-            total_files = len(pdf_files)
-
-            for i, pdf_file in enumerate(pdf_files, 1):
-                self.log_message(f"Processing: {pdf_file.name}")
-                table_data = self.extract_table_from_pdf(pdf_file)
-                
-                if table_data:
-                    headers = ["Date", "Type", "Description", "Paid in", "Paid out", "Balance"]
-                    df = pd.DataFrame(table_data, columns=headers)
-                    df = self.process_dataframe(df)
-                    df['Source_File'] = pdf_file.name
-                    all_dfs.append(df)
-                    
-                    individual_csv = Path(self.output_folder) / f"{pdf_file.stem}.csv"
-                    self.save_dataframe(df, individual_csv)
-                    self.log_message(f"Saved: {individual_csv}")
-
-                progress = (i / total_files) * 100
-                self.progress_var.set(progress)
-
-            if all_dfs:
-                combined_df = pd.concat(all_dfs, ignore_index=True)
-                duplicate_cols = combined_df.columns.tolist()
-                duplicate_cols.remove('Source_File')
-                combined_df = combined_df.drop_duplicates(subset=duplicate_cols)
-                combined_df = combined_df.sort_values('Date')
-                
-                combined_csv = Path(self.output_folder) / "all_transactions_combined.csv"
-                combined_excel = Path(self.output_folder) / "all_transactions_combined.xlsx"
-                
-                self.save_dataframe(combined_df, combined_csv)
-                combined_df.to_excel(str(combined_excel), index=False)  # Convert Path to string
-                
-                self.log_message(f"\nProcessing Summary:")
-                self.log_message(f"Total PDFs processed: {len(all_dfs)}")
-                self.log_message(f"Total transactions: {len(combined_df)}")
-                self.log_message(f"Date range: {combined_df['Date'].min()} to {combined_df['Date'].max()}")
-                self.log_message(f"Files saved in: {self.output_folder}")
-                
-                messagebox.showinfo("Success", "Processing completed successfully!")
-            
-        except Exception as e:
-            self.log_message(f"Error: {str(e)}")
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+        # Create a CLI processor instance and delegate to it
+        cli_processor = CLIProcessor(self.input_folder, self.output_folder)
         
-        finally:
-            self.process_btn.configure(state='normal')
+        # Override the log message method to also log to the GUI
+        original_log = cli_processor.log_message
+        def gui_log(message):
+            original_log(message)
+            self.log_text.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+            self.log_text.see(tk.END)
+            self.update_idletasks()
+            
+            # Update progress bar for processing steps
+            if "Progress:" in message:
+                try:
+                    progress_parts = message.split("(")[1].split("%")[0]
+                    self.progress_var.set(float(progress_parts))
+                except:
+                    pass
+        
+        cli_processor.log_message = gui_log
+        
+        # Process the files
+        success = cli_processor.process_files()
+        
+        # Update the GUI based on the result
+        if success:
+            messagebox.showinfo("Success", "Processing completed successfully!")
+        
+        self.process_btn.configure(state='normal')
+
 
 def main():
     try:
+        # Check if command-line arguments are provided
+        if len(sys.argv) > 1:
+            # Command-line mode
+            if len(sys.argv) != 3:
+                print("Usage: python extract.py <input_folder> <output_folder>")
+                sys.exit(1)
+            
+            input_folder = sys.argv[1]
+            output_folder = sys.argv[2]
+            
+            print(f"Processing PDFs from {input_folder} to {output_folder}")
+            
+            # Use the CLI processor instead of GUI
+            processor = CLIProcessor(input_folder, output_folder)
+            success = processor.process_files()
+            
+            if success:
+                print("Processing complete!")
+                sys.exit(0)
+            else:
+                print("Processing failed!")
+                sys.exit(1)
+        
+        # GUI mode
         if platform.system().lower() == 'windows':
             try:
                 from ctypes import windll
@@ -291,8 +410,8 @@ def main():
         app.mainloop()
     except Exception as e:
         print(f"Fatal error: {e}")
-        messagebox.showerror("Fatal Error", str(e))
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+        if not len(sys.argv) > 1:  # Only show messagebox in GUI mode
+            try:
+                messagebox.showerror("Fatal Error", str(e))
+            except:
+                pass
