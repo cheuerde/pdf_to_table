@@ -1,4 +1,3 @@
-
 name: Build Executables
 
 on:
@@ -56,6 +55,10 @@ jobs:
         pyinstaller --onefile \
         --name ${{ matrix.executable_name }} \
         --hidden-import pathlib \
+        --hidden-import tkinter \
+        --hidden-import tcl \
+        --hidden-import tk \
+        --hidden-import _tkinter \
         --collect-all pdfplumber \
         --collect-all cryptography \
         extract.py

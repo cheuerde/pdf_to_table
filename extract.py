@@ -4,6 +4,7 @@ import os
 import csv
 import sys
 import platform
+import traceback
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -371,6 +372,7 @@ def main():
             # Command-line mode
             if len(sys.argv) != 3:
                 print("Usage: python extract.py <input_folder> <output_folder>")
+                input("Press Enter to exit...")
                 sys.exit(1)
             
             input_folder = sys.argv[1]
@@ -384,9 +386,11 @@ def main():
             
             if success:
                 print("Processing complete!")
+                input("Press Enter to exit...")
                 sys.exit(0)
             else:
                 print("Processing failed!")
+                input("Press Enter to exit...")
                 sys.exit(1)
         
         # GUI mode
@@ -410,8 +414,18 @@ def main():
         app.mainloop()
     except Exception as e:
         print(f"Fatal error: {e}")
+        traceback_info = traceback.format_exc()
+        print(traceback_info)
+        
         if not len(sys.argv) > 1:  # Only show messagebox in GUI mode
             try:
-                messagebox.showerror("Fatal Error", str(e))
+                messagebox.showerror("Fatal Error", f"{str(e)}\n\nSee console for details.")
             except:
                 pass
+        
+        print("\nPress Enter to exit...")
+        input()  # Wait for user input before exiting
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
