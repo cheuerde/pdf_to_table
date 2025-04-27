@@ -5,6 +5,7 @@ import csv
 import sys
 import platform
 import traceback
+import re
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -77,6 +78,45 @@ class CLIProcessor:
         except Exception as e:
             self.log_message(f"Error processing {pdf_path}: {str(e)}")
             return None, []
+    
+    def extract_account_number(self, filename):
+        """Extract account number from filename pattern like 'Transactions--601730-01606158--16-12-2023-10-12-2024.pdf'"""
+        try:
+            # Look for pattern like 601730-01606158
+            match = re.search(r'--(\d+)-(\d+)--', filename)
+            if match:
+                sort_code = match.group(1)
+                account_number = match.group(2)
+                return f"{sort_code}-{account_number}"
+            else:
+                return "Unknown"
+        except Exception:
+            return "Unknown"
+    
+    def parse_description(self, row):
+        """Parse the description field for DPC and POS transactions"""
+        desc_type = row.get('Type', '')
+        description = row.get('Description', '')
+        
+        # Initialize all parsed fields as empty
+        parsed = {
+            'DPC1': '', 'DPC2': '', 'DPC3': '', 'DPC4': '', 'DPC5': '',
+            'POS1': '', 'POS2': '', 'POS3': '', 'POS4': ''
+        }
+        
+        if desc_type == 'DPC' and description:
+            # DPC format typically has 5 parts separated by commas
+            parts = [part.strip() for part in description.split(',')]
+            for i, part in enumerate(parts[:5]):
+                parsed[f'DPC{i+1}'] = part
+                
+        elif desc_type == 'POS' and description:
+            # POS format typically has 4 parts separated by commas
+            parts = [part.strip() for part in description.split(',')]
+            for i, part in enumerate(parts[:4]):
+                parsed[f'POS{i+1}'] = part
+                
+        return parsed
 
     def save_dataframe(self, df, filepath):
         df.to_csv(str(filepath),  # Convert Path to string
@@ -90,28 +130,34 @@ class CLIProcessor:
     def create_balance_validation_file(self, df, filepath):
         """Create a file that helps validate balance calculations"""
         try:
-            # Sort by date
-            df = df.sort_values('Date').copy()
+            # Sort by account number and date
+            df = df.sort_values(['Account_Number', 'Date']).copy()
             
-            # Add calculated columns for validation
-            df['Next_Balance'] = df['Balance'].shift(-1)
-            df['Calc_Next_Balance'] = df['Balance'] + df['Paid in'] - df['Paid out']
-            df['Balance_Diff'] = df['Next_Balance'] - df['Calc_Next_Balance']
+            # Group by account number and calculate within each group
+            grouped = df.groupby('Account_Number')
+            result_dfs = []
             
-            # Flag significant differences
-            df['Has_Discrepancy'] = abs(df['Balance_Diff']) > 0.01
+            for account, group_df in grouped:
+                group_df = group_df.sort_values('Date').copy()
+                group_df['Next_Balance'] = group_df['Balance'].shift(-1)
+                group_df['Calc_Next_Balance'] = group_df['Balance'] + group_df['Paid in'] - group_df['Paid out']
+                group_df['Balance_Diff'] = group_df['Next_Balance'] - group_df['Calc_Next_Balance']
+                group_df['Has_Discrepancy'] = abs(group_df['Balance_Diff']) > 0.01
+                result_dfs.append(group_df)
             
-            # Save to CSV
-            df.to_csv(str(filepath), index=False)
-            self.log_message(f"Created balance validation file: {filepath}")
-            
-            # Report statistics
-            discrepancies = df['Has_Discrepancy'].sum()
-            if discrepancies > 0:
-                self.log_message(f"Found {discrepancies} potential balance discrepancies")
-                self.log_message(f"Check {filepath} for details")
+            if result_dfs:
+                final_df = pd.concat(result_dfs)
+                final_df.to_csv(str(filepath), index=False)
+                
+                # Report statistics
+                discrepancies = final_df['Has_Discrepancy'].sum()
+                if discrepancies > 0:
+                    self.log_message(f"Found {discrepancies} potential balance discrepancies")
+                    self.log_message(f"Check {filepath} for details")
+                else:
+                    self.log_message("No balance discrepancies found")
             else:
-                self.log_message("No balance discrepancies found")
+                self.log_message("No data to validate")
                 
         except Exception as e:
             self.log_message(f"Error creating balance validation file: {str(e)}")
@@ -130,6 +176,10 @@ class CLIProcessor:
 
             for i, pdf_file in enumerate(pdf_files, 1):
                 self.log_message(f"Processing ({i}/{total_files}): {pdf_file.name}")
+                
+                # Extract account number from filename
+                account_number = self.extract_account_number(pdf_file.name)
+                
                 headers, table_data = self.extract_table_from_pdf(pdf_file)
                 
                 if table_data:
@@ -150,9 +200,18 @@ class CLIProcessor:
                     df['Description'] = df['Description'].astype(str).str.replace('\n', ' ').str.strip()
                     df = df.dropna(subset=['Date'])
                     
-                    # Add source file information and original order
+                    # Add source file information, account number, and original order
+                    df['File_Path'] = str(pdf_file)
                     df['Source_File'] = pdf_file.name
-                    df['Original_Order'] = range(len(df))  # Preserve original PDF order as a reference
+                    df['Account_Number'] = account_number
+                    df['Original_Order'] = range(len(df))
+                    
+                    # Parse descriptions for DPC and POS types
+                    parsed_desc = df.apply(self.parse_description, axis=1)
+                    parsed_df = pd.DataFrame(list(parsed_desc))
+                    
+                    # Concatenate the parsed descriptions to the main dataframe
+                    df = pd.concat([df, parsed_df], axis=1)
                     
                     all_dfs.append(df)
                     
@@ -168,21 +227,31 @@ class CLIProcessor:
             if all_dfs:
                 combined_df = pd.concat(all_dfs, ignore_index=True)
                 
-                # Remove duplicates
-                duplicate_cols = ['Date', 'Description', 'Type', 'Paid in', 'Paid out', 'Balance']
+                # Create a comprehensive duplicate detection key
+                duplicate_cols = ['Date', 'Account_Number', 'Description', 'Type', 'Paid in', 'Paid out', 'Balance']
                 combined_df = combined_df.drop_duplicates(subset=duplicate_cols)
                 
                 # Create transaction ID for more reliable identification
                 combined_df['Transaction_ID'] = combined_df.apply(
-                    lambda x: f"{x['Date'].strftime('%Y-%m-%d')}_{x['Description']}_{x['Paid in']}_{x['Paid out']}",
+                    lambda x: f"{x['Account_Number']}_{x['Date'].strftime('%Y-%m-%d')}_{x['Description']}_{x['Paid in']}_{x['Paid out']}",
                     axis=1
                 )
                 
-                # Sort purely by date for the combined file
-                combined_df = combined_df.sort_values('Date')
+                # Sort by account number and date
+                combined_df = combined_df.sort_values(['Account_Number', 'Date'])
                 
                 # Remove helper columns before saving (but keep Original_Order for reference)
                 combined_df = combined_df.drop(['Transaction_ID'], axis=1)
+                
+                # Reorder columns to put Account_Number and File_Path first
+                cols = combined_df.columns.tolist()
+                # Remove these columns from their current positions
+                for col in ['Account_Number', 'File_Path', 'Source_File']:
+                    if col in cols:
+                        cols.remove(col)
+                # Add them at the beginning
+                cols = ['Account_Number', 'File_Path', 'Source_File'] + cols
+                combined_df = combined_df[cols]
                 
                 combined_csv = Path(self.output_folder) / "all_transactions_combined.csv"
                 combined_excel = Path(self.output_folder) / "all_transactions_combined.xlsx"
@@ -194,6 +263,7 @@ class CLIProcessor:
                 self.log_message(f"Total PDFs processed: {len(pdf_files)}")
                 self.log_message(f"Total transactions: {len(combined_df)}")
                 self.log_message(f"Date range: {combined_df['Date'].min()} to {combined_df['Date'].max()}")
+                self.log_message(f"Accounts found: {', '.join(combined_df['Account_Number'].unique())}")
                 self.log_message(f"Files saved in: {self.output_folder}")
                 
                 # Also save a file with balance validation information for analysis
@@ -203,6 +273,8 @@ class CLIProcessor:
             
         except Exception as e:
             self.log_message(f"Error: {str(e)}")
+            traceback_info = traceback.format_exc()
+            self.log_message(traceback_info)
             return False
         
         return False

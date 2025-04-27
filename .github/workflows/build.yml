@@ -124,7 +124,7 @@ jobs:
         name: PDF Processor v${{ github.run_number }}
         files: |
           dist/**/extract_windows.exe
-          dist/**/extract_linux
+          dist/**/extract_linu
         body: |
           PDF Processor Release ${{ github.run_number }}
           
