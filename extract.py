@@ -92,6 +92,49 @@ class CLIProcessor:
                 return "Unknown"
         except Exception:
             return "Unknown"
+
+    def extract_account_info_from_pdf(self, pdf_path):
+        """Extract account info from PDF header text"""
+        try:
+            with pdfplumber.open(str(pdf_path)) as pdf:
+                page = pdf.pages[0]
+                text = page.extract_text()
+
+                # Extract account type (e.g., "Select Account")
+                account_type_match = re.search(r'Account type:\s*(.+?)(?:\n|Transactions)', text)
+                account_type = account_type_match.group(1).strip() if account_type_match else "Unknown"
+
+                # Extract account number (e.g., "01606123")
+                account_number_match = re.search(r'(?:Transactions\s+)?Account number:\s*(\d+)', text)
+                account_number = account_number_match.group(1).strip() if account_number_match else "Unknown"
+
+                # Extract sort code (e.g., "601730")
+                sort_code_match = re.search(r'Sort code:\s*(\d+)', text)
+                sort_code = sort_code_match.group(1).strip() if sort_code_match else "Unknown"
+
+                # Extract account name (e.g., "KIRKHAM M/TPM")
+                account_name_match = re.search(r'Account name:\s*(.+?)(?:\n|Your)', text)
+                account_name = account_name_match.group(1).strip() if account_name_match else "Unknown"
+
+                return {
+                    'sort_code': sort_code,
+                    'account_number': account_number,
+                    'account_name': account_name,
+                    'account_type': account_type,
+                    # Thom's example: "01606123-601730" = AccountNumber-SortCode
+                    'sortcode_accountnumber': f"{account_number}-{sort_code}",
+                    'accountname_accounttype': f"{account_name}-{account_type}"
+                }
+        except Exception as e:
+            self.log_message(f"Error extracting account info from {pdf_path}: {str(e)}")
+            return {
+                'sort_code': 'Unknown',
+                'account_number': 'Unknown',
+                'account_name': 'Unknown',
+                'account_type': 'Unknown',
+                'sortcode_accountnumber': 'Unknown-Unknown',
+                'accountname_accounttype': 'Unknown-Unknown'
+            }
     
     def parse_description(self, row):
         """Parse the description field for DPC and POS transactions"""
@@ -176,34 +219,38 @@ class CLIProcessor:
 
             for i, pdf_file in enumerate(pdf_files, 1):
                 self.log_message(f"Processing ({i}/{total_files}): {pdf_file.name}")
-                
-                # Extract account number from filename
-                account_number = self.extract_account_number(pdf_file.name)
-                
+
+                # Extract account info from PDF header
+                account_info = self.extract_account_info_from_pdf(pdf_file)
+
                 headers, table_data = self.extract_table_from_pdf(pdf_file)
-                
+
                 if table_data:
                     # Create DataFrame from the extracted data
                     df = pd.DataFrame(table_data, columns=headers)
-                    
+
                     # Basic data cleaning
                     df = df.dropna(how='all')
-                    
+
                     # Clean numeric values for display
                     for col in ['Balance', 'Paid in', 'Paid out']:
                         df[col] = df[col].replace({None: '0', '': '0', 'nan': '0'})
                         df[col] = df[col].astype(str).str.replace('£', '').str.replace(',', '')
                         df[col] = pd.to_numeric(df[col], errors='coerce')
-                    
+
                     # Process dates
                     df['Date'] = pd.to_datetime(df['Date'], format='%d %b %Y', errors='coerce')
                     df['Description'] = df['Description'].astype(str).str.replace('\n', ' ').str.strip()
                     df = df.dropna(subset=['Date'])
-                    
-                    # Add source file information, account number, and original order
+
+                    # Add account info columns as per Thom's spec
+                    df['SortCode-AccountNumber'] = account_info['sortcode_accountnumber']
+                    df['AccountName-AccountType'] = account_info['accountname_accounttype']
+
+                    # Add source file information for tracking
                     df['File_Path'] = str(pdf_file)
                     df['Source_File'] = pdf_file.name
-                    df['Account_Number'] = account_number
+                    df['Account_Number'] = account_info['sortcode_accountnumber']  # Keep for backwards compat
                     df['Original_Order'] = range(len(df))
                     
                     # Parse descriptions for DPC and POS types
@@ -226,49 +273,57 @@ class CLIProcessor:
 
             if all_dfs:
                 combined_df = pd.concat(all_dfs, ignore_index=True)
-                
-                # Create a comprehensive duplicate detection key
-                duplicate_cols = ['Date', 'Account_Number', 'Description', 'Type', 'Paid in', 'Paid out', 'Balance']
+
+                # Create a comprehensive duplicate detection key per Thom's spec:
+                # "Duplications are recognized because all of the above columns have duplicate values in all cells"
+                duplicate_cols = ['SortCode-AccountNumber', 'AccountName-AccountType', 'Date', 'Type', 'Description', 'Paid in', 'Paid out', 'Balance']
+                original_count = len(combined_df)
                 combined_df = combined_df.drop_duplicates(subset=duplicate_cols)
-                
-                # Create transaction ID for more reliable identification
-                combined_df['Transaction_ID'] = combined_df.apply(
-                    lambda x: f"{x['Account_Number']}_{x['Date'].strftime('%Y-%m-%d')}_{x['Description']}_{x['Paid in']}_{x['Paid out']}",
-                    axis=1
-                )
-                
-                # Sort by account number and date
-                combined_df = combined_df.sort_values(['Account_Number', 'Date'])
-                
-                # Remove helper columns before saving (but keep Original_Order for reference)
-                combined_df = combined_df.drop(['Transaction_ID'], axis=1)
-                
-                # Reorder columns to put Account_Number and File_Path first
-                cols = combined_df.columns.tolist()
-                # Remove these columns from their current positions
-                for col in ['Account_Number', 'File_Path', 'Source_File']:
-                    if col in cols:
-                        cols.remove(col)
-                # Add them at the beginning
-                cols = ['Account_Number', 'File_Path', 'Source_File'] + cols
-                combined_df = combined_df[cols]
-                
+                duplicates_removed = original_count - len(combined_df)
+                if duplicates_removed > 0:
+                    self.log_message(f"Removed {duplicates_removed} duplicate transactions")
+
+                # Sort by account and date
+                combined_df = combined_df.sort_values(['SortCode-AccountNumber', 'Date'])
+
+                # Thom's requested column order:
+                # 1. SortCode-AccountNumber
+                # 2. AccountName-AccountType
+                # 3. Date
+                # 4. Type
+                # 5. Description
+                # 6. Paid In
+                # 7. Paid out
+                # 8. Balance
+                thom_columns = ['SortCode-AccountNumber', 'AccountName-AccountType', 'Date', 'Type', 'Description', 'Paid in', 'Paid out', 'Balance']
+                thom_df = combined_df[thom_columns].copy()
+
                 combined_csv = Path(self.output_folder) / "all_transactions_combined.csv"
                 combined_excel = Path(self.output_folder) / "all_transactions_combined.xlsx"
-                
-                self.save_dataframe(combined_df, combined_csv)
-                combined_df.to_excel(str(combined_excel), index=False)
-                
+
+                self.save_dataframe(thom_df, combined_csv)
+
+                # Create Excel with separate tabs per account (as Thom requested)
+                with pd.ExcelWriter(str(combined_excel), engine='openpyxl') as writer:
+                    # Group by SortCode-AccountNumber and create a tab for each
+                    for account_id in sorted(thom_df['SortCode-AccountNumber'].unique()):
+                        account_df = thom_df[thom_df['SortCode-AccountNumber'] == account_id].copy()
+                        account_df = account_df.sort_values('Date')
+                        # Use account number part for tab name (Excel limits tab names to 31 chars)
+                        tab_name = account_id.replace('-', '_')[:31]
+                        account_df.to_excel(writer, sheet_name=tab_name, index=False)
+                        self.log_message(f"Created tab '{tab_name}' with {len(account_df)} transactions")
+
                 self.log_message(f"\nProcessing Summary:")
                 self.log_message(f"Total PDFs processed: {len(pdf_files)}")
-                self.log_message(f"Total transactions: {len(combined_df)}")
-                self.log_message(f"Date range: {combined_df['Date'].min()} to {combined_df['Date'].max()}")
-                self.log_message(f"Accounts found: {', '.join(combined_df['Account_Number'].unique())}")
+                self.log_message(f"Total transactions: {len(thom_df)}")
+                self.log_message(f"Date range: {thom_df['Date'].min()} to {thom_df['Date'].max()}")
+                self.log_message(f"Accounts found: {', '.join(sorted(thom_df['SortCode-AccountNumber'].unique()))}")
                 self.log_message(f"Files saved in: {self.output_folder}")
-                
+
                 # Also save a file with balance validation information for analysis
                 self.create_balance_validation_file(combined_df, Path(self.output_folder) / "balance_validation.csv")
-                
+
                 return True
             
         except Exception as e:
@@ -451,18 +506,16 @@ def main():
             output_folder = sys.argv[2]
             
             print(f"Processing PDFs from {input_folder} to {output_folder}")
-            
+
             # Use the CLI processor instead of GUI
             processor = CLIProcessor(input_folder, output_folder)
             success = processor.process_files()
-            
+
             if success:
                 print("Processing complete!")
-                input("Press Enter to exit...")
                 sys.exit(0)
             else:
                 print("Processing failed!")
-                input("Press Enter to exit...")
                 sys.exit(1)
         
         # GUI mode
@@ -488,15 +541,12 @@ def main():
         print(f"Fatal error: {e}")
         traceback_info = traceback.format_exc()
         print(traceback_info)
-        
+
         if not len(sys.argv) > 1:  # Only show messagebox in GUI mode
             try:
                 messagebox.showerror("Fatal Error", f"{str(e)}\n\nSee console for details.")
             except:
                 pass
-        
-        print("\nPress Enter to exit...")
-        input()  # Wait for user input before exiting
         sys.exit(1)
 
 if __name__ == "__main__":
