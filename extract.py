@@ -123,6 +123,7 @@ class CLIProcessor:
                     'account_type': account_type,
                     # Thom's example: "01606123-601730" = AccountNumber-SortCode
                     'sortcode_accountnumber': f"{account_number}-{sort_code}",
+                    # Note: Thom's column name has space: "Account Name-AccountType"
                     'accountname_accounttype': f"{account_name}-{account_type}"
                 }
         except Exception as e:
@@ -183,7 +184,7 @@ class CLIProcessor:
             for account, group_df in grouped:
                 group_df = group_df.sort_values('Date').copy()
                 group_df['Next_Balance'] = group_df['Balance'].shift(-1)
-                group_df['Calc_Next_Balance'] = group_df['Balance'] + group_df['Paid in'] - group_df['Paid out']
+                group_df['Calc_Next_Balance'] = group_df['Balance'] + group_df['Paid In'] - group_df['Paid out']
                 group_df['Balance_Diff'] = group_df['Next_Balance'] - group_df['Calc_Next_Balance']
                 group_df['Has_Discrepancy'] = abs(group_df['Balance_Diff']) > 0.01
                 result_dfs.append(group_df)
@@ -245,7 +246,7 @@ class CLIProcessor:
 
                     # Add account info columns as per Thom's spec
                     df['SortCode-AccountNumber'] = account_info['sortcode_accountnumber']
-                    df['AccountName-AccountType'] = account_info['accountname_accounttype']
+                    df['Account Name-AccountType'] = account_info['accountname_accounttype']
 
                     # Add source file information for tracking
                     df['File_Path'] = str(pdf_file)
@@ -274,9 +275,12 @@ class CLIProcessor:
             if all_dfs:
                 combined_df = pd.concat(all_dfs, ignore_index=True)
 
+                # Rename columns to match Thom's exact spec
+                combined_df = combined_df.rename(columns={'Paid in': 'Paid In'})
+
                 # Create a comprehensive duplicate detection key per Thom's spec:
                 # "Duplications are recognized because all of the above columns have duplicate values in all cells"
-                duplicate_cols = ['SortCode-AccountNumber', 'AccountName-AccountType', 'Date', 'Type', 'Description', 'Paid in', 'Paid out', 'Balance']
+                duplicate_cols = ['SortCode-AccountNumber', 'Account Name-AccountType', 'Date', 'Type', 'Description', 'Paid In', 'Paid out', 'Balance']
                 original_count = len(combined_df)
                 combined_df = combined_df.drop_duplicates(subset=duplicate_cols)
                 duplicates_removed = original_count - len(combined_df)
@@ -288,14 +292,14 @@ class CLIProcessor:
 
                 # Thom's requested column order:
                 # 1. SortCode-AccountNumber
-                # 2. AccountName-AccountType
+                # 2. Account Name-AccountType
                 # 3. Date
                 # 4. Type
                 # 5. Description
                 # 6. Paid In
                 # 7. Paid out
                 # 8. Balance
-                thom_columns = ['SortCode-AccountNumber', 'AccountName-AccountType', 'Date', 'Type', 'Description', 'Paid in', 'Paid out', 'Balance']
+                thom_columns = ['SortCode-AccountNumber', 'Account Name-AccountType', 'Date', 'Type', 'Description', 'Paid In', 'Paid out', 'Balance']
                 thom_df = combined_df[thom_columns].copy()
 
                 combined_csv = Path(self.output_folder) / "all_transactions_combined.csv"
