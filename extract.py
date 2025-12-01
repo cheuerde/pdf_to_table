@@ -92,6 +92,23 @@ class CLIProcessor:
                 return "Unknown"
         except Exception:
             return "Unknown"
+    
+    def extract_date_range_from_filename(self, filename):
+        """Extract start and end dates from filename pattern like 'Transactions--601730-01606158--16-04-2018-16-04-2019.pdf'
+        Returns (start_date, end_date) as datetime objects, or (None, None) if parsing fails.
+        """
+        try:
+            # Pattern: --DD-MM-YYYY-DD-MM-YYYY.pdf at the end
+            match = re.search(r'--(\d{2})-(\d{2})-(\d{4})-(\d{2})-(\d{2})-(\d{4})\.pdf$', filename)
+            if match:
+                start_day, start_month, start_year = match.group(1), match.group(2), match.group(3)
+                end_day, end_month, end_year = match.group(4), match.group(5), match.group(6)
+                start_date = datetime.strptime(f"{start_day}-{start_month}-{start_year}", "%d-%m-%Y")
+                end_date = datetime.strptime(f"{end_day}-{end_month}-{end_year}", "%d-%m-%Y")
+                return start_date, end_date
+            return None, None
+        except Exception:
+            return None, None
 
     def extract_account_info_from_pdf(self, pdf_path):
         """Extract account info from PDF header text"""
@@ -121,8 +138,8 @@ class CLIProcessor:
                     'account_number': account_number,
                     'account_name': account_name,
                     'account_type': account_type,
-                    # Thom's example: "01606123-601730" = AccountNumber-SortCode
-                    'sortcode_accountnumber': f"{account_number}-{sort_code}",
+                    # Correct format: SortCode-AccountNumber (e.g., "601730-01606123")
+                    'sortcode_accountnumber': f"{sort_code}-{account_number}",
                     # Note: Thom's column name has space: "Account Name-AccountType"
                     'accountname_accounttype': f"{account_name}-{account_type}"
                 }
@@ -172,20 +189,29 @@ class CLIProcessor:
                   float_format='%.2f')
     
     def create_balance_validation_file(self, df, filepath):
-        """Create a file that helps validate balance calculations"""
+        """Create a file that helps validate balance calculations
+        
+        When sorted NEWEST to OLDEST (by Global_Position):
+        - Row N is newer, Row N+1 (shift -1) is older
+        - Balance(N) = Balance(N+1) + Paid_In(N) - Paid_Out(N)
+        - So: Balance(N+1) = Balance(N) - Paid_In(N) + Paid_Out(N)
+        """
         try:
-            # Sort by account number and date
-            df = df.sort_values(['Account_Number', 'Date']).copy()
+            # Sort by account number and Global_Position (preserves NEWEST to OLDEST from PDFs)
+            df = df.sort_values(['Account_Number', 'Global_Position']).copy()
             
             # Group by account number and calculate within each group
             grouped = df.groupby('Account_Number')
             result_dfs = []
             
             for account, group_df in grouped:
-                group_df = group_df.sort_values('Date').copy()
-                group_df['Next_Balance'] = group_df['Balance'].shift(-1)
-                group_df['Calc_Next_Balance'] = group_df['Balance'] + group_df['Paid In'] - group_df['Paid out']
-                group_df['Balance_Diff'] = group_df['Next_Balance'] - group_df['Calc_Next_Balance']
+                # Sort by Global_Position (NEWEST to OLDEST)
+                group_df = group_df.sort_values('Global_Position').copy()
+                # Next row (shift -1) is the OLDER transaction
+                group_df['Prev_Balance'] = group_df['Balance'].shift(-1)
+                # For NEWEST to OLDEST: Balance(N) should = Prev_Balance + Paid_In - Paid_Out
+                group_df['Calc_Balance'] = group_df['Prev_Balance'] + group_df['Paid In'] - group_df['Paid out']
+                group_df['Balance_Diff'] = group_df['Balance'] - group_df['Calc_Balance']
                 group_df['Has_Discrepancy'] = abs(group_df['Balance_Diff']) > 0.01
                 result_dfs.append(group_df)
             
@@ -215,8 +241,19 @@ class CLIProcessor:
                 self.log_message("No PDF files found in input folder")
                 return False
 
+            # Sort PDFs by end date (descending) so we process newest periods first
+            # This preserves the correct order when combining overlapping date ranges
+            def get_sort_key(pdf_file):
+                _, end_date = self.extract_date_range_from_filename(pdf_file.name)
+                # Return end_date for sorting, use epoch if None
+                return end_date if end_date else datetime(1900, 1, 1)
+            
+            pdf_files = sorted(pdf_files, key=get_sort_key, reverse=True)
+            self.log_message("PDFs sorted by end date (newest first) to preserve transaction order")
+
             all_dfs = []
             total_files = len(pdf_files)
+            global_position = 0  # Track order across all PDFs
 
             for i, pdf_file in enumerate(pdf_files, 1):
                 self.log_message(f"Processing ({i}/{total_files}): {pdf_file.name}")
@@ -252,7 +289,10 @@ class CLIProcessor:
                     df['File_Path'] = str(pdf_file)
                     df['Source_File'] = pdf_file.name
                     df['Account_Number'] = account_info['sortcode_accountnumber']  # Keep for backwards compat
-                    df['Original_Order'] = range(len(df))
+                    # Use global position to preserve order across all PDFs (NEWEST to OLDEST)
+                    df['Global_Position'] = range(global_position, global_position + len(df))
+                    global_position += len(df)
+                    df['Original_Order'] = range(len(df))  # Keep per-file order too
                     
                     # Parse descriptions for DPC and POS types
                     parsed_desc = df.apply(self.parse_description, axis=1)
@@ -287,8 +327,9 @@ class CLIProcessor:
                 if duplicates_removed > 0:
                     self.log_message(f"Removed {duplicates_removed} duplicate transactions")
 
-                # Sort by account and date
-                combined_df = combined_df.sort_values(['SortCode-AccountNumber', 'Date'])
+                # Sort by account and global position (preserves NEWEST to OLDEST order from PDFs)
+                # This is per Thom's request: preserve original line order instead of sorting by date
+                combined_df = combined_df.sort_values(['SortCode-AccountNumber', 'Global_Position'])
 
                 # Thom's requested column order:
                 # 1. SortCode-AccountNumber
@@ -310,9 +351,12 @@ class CLIProcessor:
                 # Create Excel with separate tabs per account (as Thom requested)
                 with pd.ExcelWriter(str(combined_excel), engine='openpyxl') as writer:
                     # Group by SortCode-AccountNumber and create a tab for each
-                    for account_id in sorted(thom_df['SortCode-AccountNumber'].unique()):
-                        account_df = thom_df[thom_df['SortCode-AccountNumber'] == account_id].copy()
-                        account_df = account_df.sort_values('Date')
+                    for account_id in sorted(combined_df['SortCode-AccountNumber'].unique()):
+                        account_df = combined_df[combined_df['SortCode-AccountNumber'] == account_id].copy()
+                        # Sort by Global_Position to preserve original PDF order (NEWEST to OLDEST)
+                        account_df = account_df.sort_values('Global_Position')
+                        # Only include Thom's requested columns in Excel output
+                        account_df = account_df[thom_columns]
                         # Use account number part for tab name (Excel limits tab names to 31 chars)
                         tab_name = account_id.replace('-', '_')[:31]
                         account_df.to_excel(writer, sheet_name=tab_name, index=False)
